@@ -72,6 +72,17 @@ Resources:
                   - ssm:GetParameter
                 Resource:
                   - arn:aws:ssm:*::parameter/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:PutBucketVersioning
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - arn:aws:s3:::ec2-instance-stack-config-*
+                  - arn:aws:s3:::ec2-instance-stack-config-*/*
 
 Outputs:
   RoleARN:

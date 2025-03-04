@@ -44,9 +44,28 @@ jobs:
       - name: Upload spicepod config to S3
         run: |
           BUCKET_NAME="${{ env.STACK_NAME }}-config-$(aws sts get-caller-identity --query 'Account' --output text)"
-          # Create bucket if it doesn't exist (first deployment)
-          aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null || \
-            aws s3api create-bucket --bucket "$BUCKET_NAME" --region ${{ env.AWS_REGION }}
+
+          # Create bucket if it doesn't exist
+          if ! aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+            echo "Creating S3 bucket '$BUCKET_NAME'..."
+            if ! aws s3api create-bucket \
+              --bucket "$BUCKET_NAME" \
+              --region ${{ env.AWS_REGION }} \
+              --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }}; then
+              echo "Failed to create S3 bucket. Please ensure the GitHub Actions role has s3:CreateBucket permission."
+              exit 1
+            fi
+            
+            # Configure bucket defaults
+            aws s3api put-public-access-block \
+              --bucket "$BUCKET_NAME" \
+              --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+            
+            aws s3api put-bucket-versioning \
+              --bucket "$BUCKET_NAME" \
+              --versioning-configuration Status=Enabled
+          fi
+
           # Upload config
           aws s3 cp spicepod.yaml "s3://$BUCKET_NAME/spicepod.yaml"
 
