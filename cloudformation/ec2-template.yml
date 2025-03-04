@@ -132,6 +132,12 @@ Resources:
             exit 1
           }
 
+          # Download spicepod config from S3
+          aws s3 cp s3://${AWS::StackName}-config-${AWS::AccountId}/spicepod.yaml /app/spicepod.yaml || {
+            echo "Failed to download spicepod config"
+            exit 1
+          }
+
           echo "Getting latest release info..."
           LATEST_RELEASE=$(curl -s https://api.github.com/repos/spiceai/spiceai/releases/latest) || {
             echo "Failed to get latest release info"
