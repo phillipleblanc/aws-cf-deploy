@@ -48,12 +48,21 @@ jobs:
           # Create bucket if it doesn't exist
           if ! aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
             echo "Creating S3 bucket '$BUCKET_NAME'..."
-            if ! aws s3api create-bucket \
-              --bucket "$BUCKET_NAME" \
-              --region ${{ env.AWS_REGION }} \
-              --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }}; then
-              echo "Failed to create S3 bucket. Please ensure the GitHub Actions role has s3:CreateBucket permission."
-              exit 1
+            if [[ "${{ env.AWS_REGION }}" == "us-east-1" ]]; then
+              # us-east-1 requires no LocationConstraint
+              aws s3api create-bucket --bucket "$BUCKET_NAME" || {
+                echo "Failed to create S3 bucket. Please ensure the GitHub Actions role has s3:CreateBucket permission."
+                exit 1
+              }
+            else
+              # Other regions require LocationConstraint
+              aws s3api create-bucket \
+                --bucket "$BUCKET_NAME" \
+                --region ${{ env.AWS_REGION }} \
+                --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }} || {
+                echo "Failed to create S3 bucket. Please ensure the GitHub Actions role has s3:CreateBucket permission."
+                exit 1
+              }
             fi
             
             # Configure bucket defaults
