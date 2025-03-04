@@ -75,8 +75,9 @@ jobs:
               --versioning-configuration Status=Enabled
           fi
 
-          # Upload config
+          # Upload configs
           aws s3 cp spicepod.yaml "s3://$BUCKET_NAME/spicepod.yaml"
+          aws s3 cp config/cloudwatch-agent-config.json "s3://$BUCKET_NAME/cloudwatch-agent-config.json"
 
       - name: Deploy CloudFormation stack
         uses: aws-actions/aws-cloudformation-github-deploy@v1

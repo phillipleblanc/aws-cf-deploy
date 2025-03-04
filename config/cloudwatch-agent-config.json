@@ -1,0 +1,25 @@
+{
+  "agent": {
+    "run_as_user": "root"
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/spiced.log",
+            "log_group_name": "/ec2/spiced/stdout",
+            "log_stream_name": "{instance_id}",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/spiced.error.log",
+            "log_group_name": "/ec2/spiced/stderr",
+            "log_stream_name": "{instance_id}",
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  }
+}
