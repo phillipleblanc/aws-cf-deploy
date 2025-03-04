@@ -33,18 +33,6 @@ Conditions:
   IsPublicInstance: !Equals [!Ref AssignPublicIP, "true"]
 
 Resources:
-  ConfigBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub ${AWS::StackName}-config-${AWS::AccountId}
-      VersioningConfiguration:
-        Status: Enabled
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-
   EC2InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -67,7 +55,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub ${ConfigBucket.Arn}/*
+                Resource: !Sub arn:aws:s3:::${AWS::StackName}-config-${AWS::AccountId}/*
 
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -128,7 +116,7 @@ Resources:
           dpkg -i -E /root/amazon-cloudwatch-agent.deb
 
           # Download CloudWatch agent config from S3
-          aws s3 cp s3://${ConfigBucket}/cloudwatch-agent-config.json /opt/aws/amazon-cloudwatch-agent/bin/config.json || {
+          aws s3 cp s3://${AWS::StackName}-config-${AWS::AccountId}/cloudwatch-agent-config.json /opt/aws/amazon-cloudwatch-agent/bin/config.json || {
             echo "Failed to download CloudWatch config"
             exit 1
           }
