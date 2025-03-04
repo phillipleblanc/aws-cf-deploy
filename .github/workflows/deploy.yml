@@ -41,6 +41,15 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Upload spicepod config to S3
+        run: |
+          BUCKET_NAME="${{ env.STACK_NAME }}-config-$(aws sts get-caller-identity --query 'Account' --output text)"
+          # Create bucket if it doesn't exist (first deployment)
+          aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null || \
+            aws s3api create-bucket --bucket "$BUCKET_NAME" --region ${{ env.AWS_REGION }}
+          # Upload config
+          aws s3 cp spicepod.yaml "s3://$BUCKET_NAME/spicepod.yaml"
+
       - name: Deploy CloudFormation stack
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:

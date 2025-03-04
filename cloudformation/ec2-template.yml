@@ -33,6 +33,51 @@ Conditions:
   IsPublicInstance: !Equals [!Ref AssignPublicIP, "true"]
 
 Resources:
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-config-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  CloudWatchConfig:
+    Type: AWS::S3::Object
+    Properties:
+      Bucket: !Ref ConfigBucket
+      Key: cloudwatch-agent-config.json
+      ContentType: application/json
+      Body: |
+        {
+          "agent": {
+            "run_as_user": "root"
+          },
+          "logs": {
+            "logs_collected": {
+              "files": {
+                "collect_list": [
+                  {
+                    "file_path": "/var/log/spiced.log",
+                    "log_group_name": "/ec2/spiced/stdout",
+                    "log_stream_name": "{instance_id}",
+                    "timezone": "UTC"
+                  },
+                  {
+                    "file_path": "/var/log/spiced.error.log",
+                    "log_group_name": "/ec2/spiced/stderr",
+                    "log_stream_name": "{instance_id}",
+                    "timezone": "UTC"
+                  }
+                ]
+              }
+            }
+          }
+        }
+
   EC2InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -47,6 +92,15 @@ Resources:
         - arn:aws:iam::aws:policy/SecretsManagerReadWrite
         - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
       Path: /
+      Policies:
+        - PolicyName: S3ConfigAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub ${ConfigBucket.Arn}/*
 
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -106,34 +160,11 @@ Resources:
           curl -o /root/amazon-cloudwatch-agent.deb https://s3.amazonaws.com/amazoncloudwatch-agent/debian/amd64/latest/amazon-cloudwatch-agent.deb
           dpkg -i -E /root/amazon-cloudwatch-agent.deb
 
-          # Configure CloudWatch agent
-          cat > /opt/aws/amazon-cloudwatch-agent/bin/config.json << 'EOL'
-          {
-            "agent": {
-              "run_as_user": "root"
-            },
-            "logs": {
-              "logs_collected": {
-                "files": {
-                  "collect_list": [
-                    {
-                      "file_path": "/var/log/spiced.log",
-                      "log_group_name": "/ec2/spiced/stdout",
-                      "log_stream_name": "{instance_id}",
-                      "timezone": "UTC"
-                    },
-                    {
-                      "file_path": "/var/log/spiced.error.log",
-                      "log_group_name": "/ec2/spiced/stderr",
-                      "log_stream_name": "{instance_id}",
-                      "timezone": "UTC"
-                    }
-                  ]
-                }
-              }
-            }
+          # Download CloudWatch agent config from S3
+          aws s3 cp s3://${ConfigBucket}/cloudwatch-agent-config.json /opt/aws/amazon-cloudwatch-agent/bin/config.json || {
+            echo "Failed to download CloudWatch config"
+            exit 1
           }
-          EOL
 
           # Start CloudWatch agent
           /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
@@ -185,20 +216,6 @@ Resources:
             echo "Failed to make binary executable"
             exit 1
           }
-
-          echo "Creating spicepod.yaml..."
-          cat > /app/spicepod.yaml << 'EOL'
-          version: v1
-          kind: Spicepod
-          name: quickstart
-
-          datasets:
-          - from: s3://spiceai-demo-datasets/taxi_trips/2024/
-            name: taxi_trips
-            description: taxi trips in s3
-            params:
-              file_format: parquet
-          EOL
 
           echo "Creating systemd service file..."
           cat > /etc/systemd/system/spiced.service << 'EOL'
