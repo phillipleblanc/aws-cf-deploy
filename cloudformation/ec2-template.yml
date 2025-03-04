@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EC2 instance with Secrets Manager access'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where the EC2 instance will be launched
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet where the EC2 instance will be launched
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type
+
+  KeyPairName:
+    Type: String
+    Description: Name of an existing EC2 KeyPair for SSH access (optional)
+    Default: ""
+
+  AssignPublicIP:
+    Type: String
+    Description: Whether to assign a public IP address to the instance
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
+  IsPublicInstance: !Equals [!Ref AssignPublicIP, "true"]
+
+Resources:
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      Path: /
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2InstanceRole
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - !If 
+          - IsPublicInstance
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 0.0.0.0/0
+            Description: Allow SSH access from anywhere when public IP is enabled
+          - !Ref AWS::NoValue
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Sub '{{resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id}}'
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          SubnetId: !Ref SubnetId
+          GroupSet: 
+            - !Ref EC2SecurityGroup
+          AssociatePublicIpAddress: !Ref AssignPublicIP
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          
+          # Enable command logging and exit on error
+          set -x
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+          
+          echo "Starting UserData script execution..."
+          
+          echo "Installing required packages..."
+          
+          # Update package list and install required packages
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y jq curl || {
+            echo "Failed to install required packages"
+            exit 1
+          }
+
+          echo "Creating app directory..."
+          mkdir -p /app || {
+            echo "Failed to create /app directory"
+            exit 1
+          }
+
+          echo "Getting latest release info..."
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/spiceai/spiceai/releases/latest) || {
+            echo "Failed to get latest release info"
+            exit 1
+          }
+          
+          echo "Finding download URL..."
+          DOWNLOAD_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[] | select(.name == "spiced_models_linux_x86_64.tar.gz") | .browser_download_url') || {
+            echo "Failed to parse release info"
+            exit 1
+          }
+          
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "Could not find download URL for spiced_models_linux_x86_64.tar.gz"
+            exit 1
+          fi
+          
+          echo "Downloading binary from $DOWNLOAD_URL..."
+          cd /tmp
+          curl -L -o spiced.tar.gz "$DOWNLOAD_URL" || {
+            echo "Failed to download binary"
+            exit 1
+          }
+          
+          echo "Extracting binary..."
+          tar xzf spiced.tar.gz || {
+            echo "Failed to extract binary"
+            exit 1
+          }
+          
+          echo "Installing binary..."
+          mv spiced /usr/local/bin/ || {
+            echo "Failed to move binary to /usr/local/bin"
+            exit 1
+          }
+          chmod +x /usr/local/bin/spiced || {
+            echo "Failed to make binary executable"
+            exit 1
+          }
+
+          echo "Creating spicepod.yaml..."
+          cat > /app/spicepod.yaml << 'EOL'
+          version: v1
+          kind: Spicepod
+          name: quickstart
+
+          datasets:
+          - from: s3://spiceai-demo-datasets/taxi_trips/2024/
+            name: taxi_trips
+            description: taxi trips in s3
+            params:
+              file_format: parquet
+          EOL
+
+          echo "Creating systemd service file..."
+          cat > /etc/systemd/system/spiced.service << 'EOL'
+          [Unit]
+          Description=Spice.ai Runtime Service
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=ubuntu
+          WorkingDirectory=/app
+          ExecStart=/usr/local/bin/spiced
+          Restart=always
+          RestartSec=5
+          StandardOutput=append:/var/log/spiced.log
+          StandardError=append:/var/log/spiced.error.log
+
+          [Install]
+          WantedBy=multi-user.target
+          EOL
+
+          echo "Setting permissions..."
+          chown -R ubuntu:ubuntu /app
+          chmod 755 /app
+          
+          echo "Setting up service..."
+          systemctl daemon-reload || {
+            echo "Failed to reload systemd"
+            exit 1
+          }
+          
+          systemctl enable spiced || {
+            echo "Failed to enable spiced service"
+            exit 1
+          }
+          
+          systemctl start spiced || {
+            echo "Failed to start spiced service"
+            exit 1
+          }
+
+          echo "UserData script completed successfully"
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-instance
+
+Outputs:
+  InstanceId:
+    Description: ID of the EC2 instance
+    Value: !Ref EC2Instance
+
+  InstancePrivateIP:
+    Description: Private IP address of the EC2 instance
+    Value: !GetAtt EC2Instance.PrivateIp 

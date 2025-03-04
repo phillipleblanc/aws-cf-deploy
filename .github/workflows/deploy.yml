@@ -1,0 +1,55 @@
+name: Deploy EC2 Instance
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      assign_public_ip:
+        description: 'Assign public IP to instance'
+        type: choice
+        required: true
+        default: 'false'
+        options:
+          - 'true'
+          - 'false'
+      key_pair_name:
+        description: 'EC2 KeyPair name for SSH access (optional)'
+        type: string
+        required: false
+        default: ''
+
+env:
+  AWS_REGION: us-east-1
+  STACK_NAME: ec2-instance-stack
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy CloudFormation stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ env.STACK_NAME }}
+          template: cloudformation/ec2-template.yml
+          no-fail-on-empty-changeset: '1'
+          parameter-overrides: >-
+            VpcId=${{ secrets.VPC_ID }},
+            SubnetId=${{ secrets.SUBNET_ID }},
+            InstanceType=t3.micro,
+            AssignPublicIP=${{ github.event.inputs.assign_public_ip || 'false' }},
+            KeyPairName=${{ github.event.inputs.key_pair_name || secrets.KEY_PAIR_NAME || '' }}

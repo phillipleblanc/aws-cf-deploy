@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM OIDC Role for GitHub Actions'
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Description: GitHub organization name
+    Default: phillipleblanc
+
+  RepositoryName:
+    Type: String
+    Description: GitHub repository name
+    Default: aws-cf-deploy
+
+Resources:
+  GithubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: 
+        - sts.amazonaws.com
+      ThumbprintList:
+        - "6938fd4d98bab03faadb97b34396831e3780aea1"
+
+  GithubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub github-actions-${RepositoryName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !GetAtt GithubOIDCProvider.Arn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${RepositoryName}:*
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      Policies:
+        - PolicyName: CustomDeploymentPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PassRole
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/*
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:instance-profile/*
+
+Outputs:
+  RoleARN:
+    Description: ARN of the created IAM Role
+    Value: !GetAtt GithubActionsRole.Arn 
