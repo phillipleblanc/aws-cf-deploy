@@ -46,7 +46,7 @@ Resources:
         RestrictPublicBuckets: true
 
   CloudWatchConfig:
-    Type: AWS::S3::Object
+    Type: AWS::S3::Bucket::Object
     Properties:
       Bucket: !Ref ConfigBucket
       Key: cloudwatch-agent-config.json
