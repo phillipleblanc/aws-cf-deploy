@@ -45,6 +45,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
       Path: /
 
   EC2InstanceProfile:
@@ -96,10 +97,48 @@ Resources:
           
           # Update package list and install required packages
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y jq curl || {
+          DEBIAN_FRONTEND=noninteractive apt-get install -y jq curl awscli || {
             echo "Failed to install required packages"
             exit 1
           }
+
+          # Install CloudWatch Logs agent
+          curl -o /root/amazon-cloudwatch-agent.deb https://s3.amazonaws.com/amazoncloudwatch-agent/debian/amd64/latest/amazon-cloudwatch-agent.deb
+          dpkg -i -E /root/amazon-cloudwatch-agent.deb
+
+          # Configure CloudWatch agent
+          cat > /opt/aws/amazon-cloudwatch-agent/bin/config.json << 'EOL'
+          {
+            "agent": {
+              "run_as_user": "root"
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/spiced.log",
+                      "log_group_name": "/ec2/spiced/stdout",
+                      "log_stream_name": "{instance_id}",
+                      "timezone": "UTC"
+                    },
+                    {
+                      "file_path": "/var/log/spiced.error.log",
+                      "log_group_name": "/ec2/spiced/stderr",
+                      "log_stream_name": "{instance_id}",
+                      "timezone": "UTC"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          EOL
+
+          # Start CloudWatch agent
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
+          systemctl enable amazon-cloudwatch-agent
+          systemctl start amazon-cloudwatch-agent
 
           echo "Creating app directory..."
           mkdir -p /app || {
@@ -165,7 +204,7 @@ Resources:
           cat > /etc/systemd/system/spiced.service << 'EOL'
           [Unit]
           Description=Spice.ai Runtime Service
-          After=network.target
+          After=network.target amazon-cloudwatch-agent.service
 
           [Service]
           Type=simple
@@ -180,6 +219,11 @@ Resources:
           [Install]
           WantedBy=multi-user.target
           EOL
+
+          # Create log files and set permissions
+          touch /var/log/spiced.log /var/log/spiced.error.log
+          chown ubuntu:ubuntu /var/log/spiced.log /var/log/spiced.error.log
+          chmod 644 /var/log/spiced.log /var/log/spiced.error.log
 
           echo "Setting permissions..."
           chown -R ubuntu:ubuntu /app
