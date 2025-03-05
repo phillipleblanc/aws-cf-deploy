@@ -28,6 +28,10 @@ Parameters:
       - "true"
       - "false"
 
+  PrivateKeySecretName:
+    Type: String
+    Description: Name of the secret in AWS Secrets Manager that contains the private key
+
 Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
   IsPublicInstance: !Equals [!Ref AssignPublicIP, "true"]
@@ -129,6 +133,18 @@ Resources:
           echo "Creating app directory..."
           mkdir -p /app || {
             echo "Failed to create /app directory"
+            exit 1
+          }
+
+          echo "Retrieving private key from Secrets Manager..."
+          aws secretsmanager get-secret-value --secret-id "${PrivateKeySecretName}" --query 'SecretString' --output text > /app/privatekey.p8 || {
+            echo "Failed to retrieve private key from Secrets Manager"
+            exit 1
+          }
+
+          # Set correct permissions for private key
+          chmod 600 /app/privatekey.p8 || {
+            echo "Failed to set permissions on private key"
             exit 1
           }
 
