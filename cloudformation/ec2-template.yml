@@ -204,7 +204,7 @@ Resources:
           Type=simple
           User=ubuntu
           WorkingDirectory=/app
-          ExecStart=/usr/local/bin/spiced
+          ExecStart=/usr/local/bin/spiced --flight 0.0.0.0:50051 --http 0.0.0.0:8090
           Restart=always
           RestartSec=5
           StandardOutput=append:/var/log/spiced.log
