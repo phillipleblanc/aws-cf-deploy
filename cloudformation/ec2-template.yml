@@ -15,6 +15,26 @@ Parameters:
     Default: t3.micro
     Description: EC2 instance type
 
+  VolumeSize:
+    Type: Number
+    Default: 20
+    Description: Size of the EBS volume in GB
+    MinValue: 1
+    MaxValue: 16384
+
+  VolumeType:
+    Type: String
+    Default: gp3
+    Description: EBS volume type
+    AllowedValues:
+      - gp2
+      - gp3
+      - io1
+      - io2
+      - st1
+      - sc1
+      - standard
+
   KeyPairName:
     Type: String
     Description: Name of an existing EC2 KeyPair for SSH access (optional)
@@ -37,6 +57,23 @@ Conditions:
   IsPublicInstance: !Equals [!Ref AssignPublicIP, "true"]
 
 Resources:
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !GetAtt EC2Instance.AvailabilityZone
+      Size: !Ref VolumeSize
+      VolumeType: !Ref VolumeType
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-data-volume
+
+  VolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref EC2Instance
+      VolumeId: !Ref DataVolume
+
   EC2InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -129,6 +166,57 @@ Resources:
           /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
           systemctl enable amazon-cloudwatch-agent
           systemctl start amazon-cloudwatch-agent
+
+          # Setup EBS volume
+          echo "Setting up EBS volume..."
+          while [ ! -e /dev/nvme1n1 ] && [ ! -e /dev/xvdf ]; do
+            echo "Waiting for EBS volume to be attached..."
+            sleep 5
+          done
+
+          DEVICE_NAME="/dev/nvme1n1"
+          if [ ! -e "$DEVICE_NAME" ]; then
+            DEVICE_NAME="/dev/xvdf"
+          fi
+
+          # Check if the volume is already formatted
+          if ! blkid $DEVICE_NAME; then
+            echo "Formatting EBS volume..."
+            mkfs -t ext4 $DEVICE_NAME || {
+              echo "Failed to format EBS volume"
+              exit 1
+            }
+          fi
+
+          # Create mount point and add to fstab
+          echo "Creating mount point..."
+          mkdir -p /data || {
+            echo "Failed to create /data directory"
+            exit 1
+          }
+
+          # Get the UUID of the formatted volume
+          UUID=$(blkid -s UUID -o value $DEVICE_NAME)
+          if [ -z "$UUID" ]; then
+            echo "Failed to get UUID of formatted volume"
+            exit 1
+          fi
+
+          # Add to fstab using UUID
+          echo "UUID=$UUID /data ext4 defaults,nofail 0 2" >> /etc/fstab || {
+            echo "Failed to update fstab"
+            exit 1
+          }
+
+          # Mount the volume
+          mount /data || {
+            echo "Failed to mount volume"
+            exit 1
+          }
+
+          # Set permissions
+          chown ubuntu:ubuntu /data
+          chmod 755 /data
 
           echo "Creating app directory..."
           mkdir -p /app || {
