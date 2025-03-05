@@ -26,3 +26,18 @@ aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[?OutputKey==`RoleARN`].OutputValue' \
   --output text
 ```
+
+## Deploy the EC2 instance
+
+```bash
+aws cloudformation deploy \
+  --template-file cloudformation/ec2-template.yml \
+  --stack-name ec2-instance-stack \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    VpcId=<vpc-id> \
+    SubnetId=<subnet-id> \
+    InstanceType=t3.micro \
+    KeyPairName="spiceai-poc" \
+    AssignPublicIP=true
+```
