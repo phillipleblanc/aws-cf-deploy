@@ -20,6 +20,11 @@ Parameters:
       - 'true'
       - 'false'
 
+  ExistingOIDCProviderArn:
+    Type: String
+    Description: ARN of existing OIDC provider (required if CreateOIDCProvider is false)
+    Default: ''
+
 Conditions:
   ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, 'true']
 
@@ -43,7 +48,10 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !GetAtt GithubOIDCProvider.Arn
+              Federated: !If 
+                - ShouldCreateOIDCProvider
+                - !GetAtt GithubOIDCProvider.Arn
+                - !Ref ExistingOIDCProviderArn
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringLike:
