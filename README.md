@@ -1,5 +1,10 @@
 # aws-cf-deploy
 
+## Find existing OIDC provider ARN:
+
+```bash
+aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[?contains(Arn, `token.actions.githubusercontent.com`)].Arn' --output text
+```
 
 ## Deploy the GitHub OIDC Role
 
@@ -9,5 +14,6 @@ aws cloudformation deploy \
   --stack-name github-oidc-role \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
-    CreateOIDCProvider=false
+    CreateOIDCProvider=false \
+    ExistingOIDCProviderArn=<existing-oidc-provider-arn>
 ```
