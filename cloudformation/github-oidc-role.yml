@@ -12,9 +12,21 @@ Parameters:
     Description: GitHub repository name
     Default: aws-cf-deploy
 
+  CreateOIDCProvider:
+    Type: String
+    Description: Whether to create the OIDC Provider (set to 'false' if it already exists)
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Conditions:
+  ShouldCreateOIDCProvider: !Equals [!Ref CreateOIDCProvider, 'true']
+
 Resources:
   GithubOIDCProvider:
     Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOIDCProvider
     Properties:
       Url: https://token.actions.githubusercontent.com
       ClientIdList: 
