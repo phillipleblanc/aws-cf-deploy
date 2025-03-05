@@ -17,3 +17,12 @@ aws cloudformation deploy \
     CreateOIDCProvider=false \
     ExistingOIDCProviderArn=<existing-oidc-provider-arn>
 ```
+
+## Get GitHub OIDC Role ARN
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name github-oidc-role \
+  --query 'Stacks[0].Outputs[?OutputKey==`RoleARN`].OutputValue' \
+  --output text
+```
