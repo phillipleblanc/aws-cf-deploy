@@ -242,22 +242,7 @@ Resources:
             exit 1
           }
 
-          echo "Getting latest release info..."
-          LATEST_RELEASE=$(curl -s https://api.github.com/repos/spiceai/spiceai/releases/latest) || {
-            echo "Failed to get latest release info"
-            exit 1
-          }
-          
-          echo "Finding download URL..."
-          DOWNLOAD_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[] | select(.name == "spiced_models_linux_x86_64.tar.gz") | .browser_download_url') || {
-            echo "Failed to parse release info"
-            exit 1
-          }
-          
-          if [ -z "$DOWNLOAD_URL" ]; then
-            echo "Could not find download URL for spiced_models_linux_x86_64.tar.gz"
-            exit 1
-          fi
+          DOWNLOAD_URL=https://public-data.spiceai.org/spiced_models_linux_x86_64_1.1.0-unstable-snowflake.tar.gz
           
           echo "Downloading binary from $DOWNLOAD_URL..."
           cd /tmp
