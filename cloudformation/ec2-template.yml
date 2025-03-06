@@ -40,21 +40,12 @@ Parameters:
     Description: Name of an existing EC2 KeyPair for SSH access (optional)
     Default: ""
 
-  AssignPublicIP:
-    Type: String
-    Description: Whether to assign a public IP address to the instance
-    Default: "false"
-    AllowedValues:
-      - "true"
-      - "false"
-
   PrivateKeySecretName:
     Type: String
     Description: Name of the secret in AWS Secrets Manager that contains the private key
 
 Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
-  IsPublicInstance: !Equals [!Ref AssignPublicIP, "true"]
 
 Resources:
   DataVolume:
@@ -122,6 +113,15 @@ Resources:
 
   EC2Instance:
     Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        WaitOnResourceSignals: true
+        MaxBatchSize: 1
+        MinInstancesInService: 0
+        PauseTime: PT15M
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Sub '{{resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id}}'
@@ -132,7 +132,121 @@ Resources:
           SubnetId: !Ref SubnetId
           GroupSet: 
             - !Ref EC2SecurityGroup
-          AssociatePublicIpAddress: !Ref AssignPublicIP
+      Metadata:
+        AWS::CloudFormation::Init:
+          configSets:
+            default:
+              - install_deps
+              - configure_updates
+              - configure_secrets
+              - configure_services
+          install_deps:
+            packages:
+              apt:
+                jq: []
+                curl: []
+                awscli: []
+                python3-pip: []
+            commands:
+              01_install_cfn_tools:
+                command: pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
+          configure_updates:
+            files:
+              "/usr/local/bin/update-spice.sh":
+                content: !Sub |
+                  #!/bin/bash
+                  set -e
+                  
+                  echo "Starting configuration update at $(date)"
+                  
+                  # Update spicepod config
+                  aws s3 cp s3://${AWS::StackName}-config-${AWS::AccountId}/spicepod.yaml /app/spicepod.yaml.new
+                  if [ -f /app/spicepod.yaml.new ]; then
+                    mv /app/spicepod.yaml.new /app/spicepod.yaml
+                    chown ubuntu:ubuntu /app/spicepod.yaml
+                    chmod 644 /app/spicepod.yaml
+                    echo "Updated spicepod config"
+                  fi
+                  
+                  # Update CloudWatch config
+                  aws s3 cp s3://${AWS::StackName}-config-${AWS::AccountId}/cloudwatch-agent-config.json /opt/aws/amazon-cloudwatch-agent/bin/config.json.new
+                  if [ -f /opt/aws/amazon-cloudwatch-agent/bin/config.json.new ]; then
+                    mv /opt/aws/amazon-cloudwatch-agent/bin/config.json.new /opt/aws/amazon-cloudwatch-agent/bin/config.json
+                    systemctl restart amazon-cloudwatch-agent
+                    echo "Updated CloudWatch config"
+                  fi
+                  
+                  # Check for new binary version
+                  DOWNLOAD_URL=https://public-data.spiceai.org/spiced_models_linux_x86_64_1.1.0-unstable-snowflake.tar.gz
+                  CURRENT_VERSION=$(spiced --version 2>/dev/null || echo "none")
+                  
+                  cd /tmp
+                  curl -L -o spiced.tar.gz "$DOWNLOAD_URL"
+                  tar xzf spiced.tar.gz
+                  NEW_VERSION=$(./spiced --version 2>/dev/null || echo "none")
+                  
+                  if [ "$CURRENT_VERSION" != "$NEW_VERSION" ]; then
+                    systemctl stop spiced
+                    mv spiced /usr/local/bin/
+                    chmod +x /usr/local/bin/spiced
+                    echo "Updated spice binary from $CURRENT_VERSION to $NEW_VERSION"
+                  fi
+                  
+                  rm -f spiced.tar.gz spiced
+                  
+                  # Reload systemd in case service file was updated
+                  systemctl daemon-reload
+                  
+                  # Always restart spiced service to pick up any config changes
+                  systemctl restart spiced
+                  
+                  echo "Configuration update completed at $(date)"
+                mode: "000755"
+                owner: "root"
+                group: "root"
+          configure_secrets:
+            commands:
+              01_retrieve_private_key:
+                command: !Sub |
+                  aws secretsmanager get-secret-value --secret-id "${PrivateKeySecretName}" --query 'SecretString' --output text > /app/privatekey.p8
+                  chmod 600 /app/privatekey.p8
+                  chown ubuntu:ubuntu /app/privatekey.p8
+          configure_services:
+            files:
+              "/etc/systemd/system/spiced.service":
+                content: |
+                  [Unit]
+                  Description=Spice.ai Runtime Service
+                  After=network.target amazon-cloudwatch-agent.service
+                  
+                  [Service]
+                  Type=simple
+                  User=ubuntu
+                  WorkingDirectory=/app
+                  ExecStart=/usr/local/bin/spiced --flight 0.0.0.0:50051 --http 0.0.0.0:8090
+                  Restart=always
+                  RestartSec=5
+                  StandardOutput=append:/var/log/spiced.log
+                  StandardError=append:/var/log/spiced.error.log
+                  
+                  [Install]
+                  WantedBy=multi-user.target
+                mode: "000644"
+                owner: "root"
+                group: "root"
+            commands:
+              01_create_log_files:
+                command: |
+                  touch /var/log/spiced.log /var/log/spiced.error.log
+                  chown ubuntu:ubuntu /var/log/spiced.log /var/log/spiced.error.log
+                  chmod 644 /var/log/spiced.log /var/log/spiced.error.log
+              02_run_initial_update:
+                command: /usr/local/bin/update-spice.sh
+              03_enable_spiced:
+                command: |
+                  systemctl daemon-reload
+                  systemctl enable spiced
+                  systemctl start spiced
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
@@ -143,29 +257,9 @@ Resources:
           
           echo "Starting UserData script execution..."
           
-          echo "Installing required packages..."
-          
-          # Update package list and install required packages
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y jq curl awscli || {
-            echo "Failed to install required packages"
-            exit 1
-          }
-
           # Install CloudWatch Logs agent
           curl -o /root/amazon-cloudwatch-agent.deb https://s3.amazonaws.com/amazoncloudwatch-agent/debian/amd64/latest/amazon-cloudwatch-agent.deb
           dpkg -i -E /root/amazon-cloudwatch-agent.deb
-
-          # Download CloudWatch agent config from S3
-          aws s3 cp s3://${AWS::StackName}-config-${AWS::AccountId}/cloudwatch-agent-config.json /opt/aws/amazon-cloudwatch-agent/bin/config.json || {
-            echo "Failed to download CloudWatch config"
-            exit 1
-          }
-
-          # Start CloudWatch agent
-          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
-          systemctl enable amazon-cloudwatch-agent
-          systemctl start amazon-cloudwatch-agent
 
           # Setup EBS volume
           echo "Setting up EBS volume..."
@@ -224,93 +318,38 @@ Resources:
             exit 1
           }
 
-          echo "Retrieving private key from Secrets Manager..."
-          aws secretsmanager get-secret-value --secret-id "${PrivateKeySecretName}" --query 'SecretString' --output text > /app/privatekey.p8 || {
-            echo "Failed to retrieve private key from Secrets Manager"
-            exit 1
-          }
-
-          # Set correct permissions for private key
-          chmod 600 /app/privatekey.p8 || {
-            echo "Failed to set permissions on private key"
-            exit 1
-          }
-
-          # Download spicepod config from S3
-          aws s3 cp s3://${AWS::StackName}-config-${AWS::AccountId}/spicepod.yaml /app/spicepod.yaml || {
-            echo "Failed to download spicepod config"
-            exit 1
-          }
-
-          DOWNLOAD_URL=https://public-data.spiceai.org/spiced_models_linux_x86_64_1.1.0-unstable-snowflake.tar.gz
+          # Initialize CloudFormation helper scripts
+          apt-get update
+          apt-get -y install python3-pip
+          pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
           
-          echo "Downloading binary from $DOWNLOAD_URL..."
-          cd /tmp
-          curl -L -o spiced.tar.gz "$DOWNLOAD_URL" || {
-            echo "Failed to download binary"
-            exit 1
-          }
+          # Set up the cfn-hup configuration
+          mkdir -p /etc/cfn/hooks.d
           
-          echo "Extracting binary..."
-          tar xzf spiced.tar.gz || {
-            echo "Failed to extract binary"
-            exit 1
-          }
+          cat > /etc/cfn/cfn-hup.conf << EOF
+          [main]
+          stack=${AWS::StackName}
+          region=${AWS::Region}
+          interval=1
+          EOF
           
-          echo "Installing binary..."
-          mv spiced /usr/local/bin/ || {
-            echo "Failed to move binary to /usr/local/bin"
-            exit 1
-          }
-          chmod +x /usr/local/bin/spiced || {
-            echo "Failed to make binary executable"
-            exit 1
-          }
-
-          echo "Creating systemd service file..."
-          cat > /etc/systemd/system/spiced.service << 'EOL'
-          [Unit]
-          Description=Spice.ai Runtime Service
-          After=network.target amazon-cloudwatch-agent.service
-
-          [Service]
-          Type=simple
-          User=ubuntu
-          WorkingDirectory=/app
-          ExecStart=/usr/local/bin/spiced --flight 0.0.0.0:50051 --http 0.0.0.0:8090
-          Restart=always
-          RestartSec=5
-          StandardOutput=append:/var/log/spiced.log
-          StandardError=append:/var/log/spiced.error.log
-
-          [Install]
-          WantedBy=multi-user.target
-          EOL
-
-          # Create log files and set permissions
-          touch /var/log/spiced.log /var/log/spiced.error.log
-          chown ubuntu:ubuntu /var/log/spiced.log /var/log/spiced.error.log
-          chmod 644 /var/log/spiced.log /var/log/spiced.error.log
-
-          echo "Setting permissions..."
-          chown -R ubuntu:ubuntu /app
-          chmod 755 /app
+          cat > /etc/cfn/hooks.d/cfn-auto-reloader.conf << EOF
+          [cfn-auto-reloader-hook]
+          triggers=post.update
+          path=Resources.EC2Instance.Metadata.AWS::CloudFormation::Init
+          action=/usr/local/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region} --configsets default
+          runas=root
+          EOF
           
-          echo "Setting up service..."
-          systemctl daemon-reload || {
-            echo "Failed to reload systemd"
-            exit 1
-          }
+          # Start cfn-hup
+          systemctl enable cfn-hup
+          systemctl start cfn-hup
           
-          systemctl enable spiced || {
-            echo "Failed to enable spiced service"
-            exit 1
-          }
-          
-          systemctl start spiced || {
-            echo "Failed to start spiced service"
-            exit 1
-          }
+          # Run cfn-init
+          /usr/local/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region} --configsets default || error_exit 'Failed to run cfn-init'
+
+          # Signal CloudFormation that the instance is ready
+          /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
 
           echo "UserData script completed successfully"
       Tags:
